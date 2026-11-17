@@ -1,0 +1,23 @@
+# Python virtual environments & caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node dependencies (dist is built during start/Docker build)
+frontend/node_modules/
+frontend/dist/
+
+# Temporary media files
+*.wav
+*.mp3
+*.m4a
+*.webm
+*.ogg
+*.part
+*.ytdl
+
+# OS / Editor metadata
+.DS_Store
+.env
