@@ -20,6 +20,9 @@ interface NoteTimelineHighwayProps {
   fluteType: FluteType;
   showChords: boolean;
   loopRange: { start: number; end: number } | null;
+  needsBrowserAudio?: boolean;
+  isCapturingAudio?: boolean;
+  onStartCapture?: () => void;
   onSeek: (time: number) => void;
   onSetLoop: (range: { start: number; end: number } | null) => void;
 }
@@ -38,6 +41,9 @@ export const NoteTimelineHighway: React.FC<NoteTimelineHighwayProps> = ({
   fluteType,
   showChords,
   loopRange,
+  needsBrowserAudio,
+  isCapturingAudio,
+  onStartCapture,
   onSeek,
   onSetLoop,
 }) => {
@@ -155,6 +161,31 @@ export const NoteTimelineHighway: React.FC<NoteTimelineHighwayProps> = ({
           <div className="highway-playhead" style={{ left: `${playheadLeftPct}%` }}>
             <span className="playhead-tag">NOW</span>
           </div>
+
+          {/* Helpful Empty-State Prompt for YouTube-Only Videos awaiting Tab/Mic Capture */}
+          {notes.length === 0 && (
+            <div
+              className="highway-empty-overlay"
+              onClick={(ev) => ev.stopPropagation()}
+            >
+              {isCapturingAudio ? (
+                <span>Listening to live audio… Notes will appear here as melody plays!</span>
+              ) : (
+                <>
+                  <span>
+                    {needsBrowserAudio
+                      ? 'This is a YouTube-only video (not in Apple Music / Deezer catalogs) — capture playing audio to stream live notes onto this ribbon:'
+                      : 'No melody notes extracted yet for this track.'}
+                  </span>
+                  {onStartCapture && (
+                    <button type="button" className="primary-btn compact" onClick={onStartCapture}>
+                      🎙️ Capture Tab Audio &amp; Stream Live Notes
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
           {/* Melody Note Bars */}
           {visibleNotes.map((note) => {

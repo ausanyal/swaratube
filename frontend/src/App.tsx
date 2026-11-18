@@ -20,6 +20,7 @@ import {
   getChordStringMidis,
   getGuitarShapeForChord,
 } from './utils/guitarChords';
+import { LiveBrowserPitchTracker } from './utils/livePitchTracker';
 import { formatSeconds, transformSongView } from './utils/musicMapping';
 import { synthEngine } from './utils/synthAudio';
 
@@ -59,12 +60,16 @@ export const App: React.FC = () => {
   const [uploadTitle, setUploadTitle] = useState<string>('');
   const [uploadYtUrl, setUploadYtUrl] = useState<string>('');
 
-  // Live Browser Audio Capture (Tab Audio or Microphone -> /api/analyze-upload)
+  // Live Browser Audio Capture (Tab Audio or Microphone -> /api/analyze-upload + Live Pitch Streaming)
   const [isCapturingAudio, setIsCapturingAudio] = useState<boolean>(false);
   const [captureSeconds, setCaptureSeconds] = useState<number>(0);
+  const [liveCapturedNotes, setLiveCapturedNotes] = useState<SongNote[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const captureStreamRef = useRef<MediaStream | null>(null);
   const captureChunksRef = useRef<BlobPart[]>([]);
+  const livePitchTrackerRef = useRef<LiveBrowserPitchTracker | null>(null);
+  const currentTimeRef = useRef<number>(0);
+  currentTimeRef.current = currentTime;
 
   const refreshSongList = useCallback(async () => {
     try {
@@ -243,6 +248,7 @@ export const App: React.FC = () => {
       };
 
       recorder.onstop = async () => {
+        livePitchTrackerRef.current?.stop();
         setIsCapturingAudio(false);
         setIsPlaying(false);
         captureStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -257,7 +263,7 @@ export const App: React.FC = () => {
         }
 
         setLoading(true);
-        setStatusMessage('Isolating vocal/lead melody & generating synced Flute & Piano notes from captured audio…');
+        setStatusMessage('Finalizing chords, phrases & full arrangement from captured audio…');
         try {
           const form = new FormData();
           form.append('file', blob, `capture${ext}`);
@@ -279,9 +285,10 @@ export const App: React.FC = () => {
             throw new Error(errPayload.detail || `Transcription failed (${res.status})`);
           }
           const data = (await res.json()) as SongData;
+          setLiveCapturedNotes([]);
           setSong(data);
           setSeekRequest((prev) => ({ time: 0, seq: (prev?.seq ?? 0) + 1 }));
-          setStatusMessage('Notes generated! Press Play to practice in sync with your YouTube video.');
+          setStatusMessage('Full Flute, Piano & Guitar arrangement saved! Press Play to practice.');
           await refreshSongList();
         } catch (err) {
           setErrorMessage(err instanceof Error ? err.message : String(err));
@@ -292,13 +299,26 @@ export const App: React.FC = () => {
       };
 
       // Restart video from 0:00 and play so captured timestamps align 1-to-1 with YouTube playback
+      setLiveCapturedNotes([]);
       setSeekRequest((prev) => ({ time: 0, seq: (prev?.seq ?? 0) + 1 }));
       setIsPlaying(true);
+
+      // Start real-time WebAudio YIN pitch streaming so Ribbon, Flute & Piano light up LIVE while capturing!
+      if (!livePitchTrackerRef.current) {
+        livePitchTrackerRef.current = new LiveBrowserPitchTracker();
+      }
+      livePitchTrackerRef.current.start(
+        audioOnlyStream,
+        () => currentTimeRef.current,
+        song?.key.tonicMidi ?? 60,
+        (streamedNotes) => setLiveCapturedNotes(streamedNotes)
+      );
+
       recorder.start(500);
       mediaRecorderRef.current = recorder;
       setIsCapturingAudio(true);
       setStatusMessage(
-        'Recording audio in sync from 0:00… Let the song play (20s or full song), then click "Finish & Generate Notes".'
+        'Streaming live notes onto the Ribbon from 0:00! Click "Finish & Generate Notes" anytime to finalize chords & phrases.'
       );
     } catch (err) {
       if (err instanceof Error && err.name === 'NotAllowedError') {
@@ -383,13 +403,18 @@ export const App: React.FC = () => {
         setGuitarPatternId(song.tempo < 82 ? 'ballad_4' : 'island_4');
       }
       setGuitarCapoMode('auto');
+      setLiveCapturedNotes([]);
     }
   }, [song]);
 
   const transformed = useMemo(() => {
     if (!song) return null;
-    return transformSongView(song, transpose, customTonicPc);
-  }, [song, transpose, customTonicPc]);
+    const base = transformSongView(song, transpose, customTonicPc);
+    if (base.notes.length === 0 && liveCapturedNotes.length > 0) {
+      return { ...base, notes: liveCapturedNotes };
+    }
+    return base;
+  }, [song, transpose, customTonicPc, liveCapturedNotes]);
 
   const effectiveTime = Math.max(0, currentTime + syncOffset);
 
@@ -892,6 +917,9 @@ export const App: React.FC = () => {
             fluteType={fluteType}
             showChords={showChords}
             loopRange={loopRange}
+            needsBrowserAudio={song.needsBrowserAudio}
+            isCapturingAudio={isCapturingAudio}
+            onStartCapture={() => void startLiveAudioCapture('tab')}
             onSeek={handleSeek}
             onSetLoop={setLoopRange}
           />

@@ -1747,3 +1747,19 @@ select:focus-visible {
 .finger-legend-bar strong {
   color: #e2e8f0;
 }
+
+.highway-empty-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px 24px;
+  text-align: center;
+  background: rgba(7, 11, 20, 0.78);
+  color: #cbd5e1;
+  font-size: 0.86rem;
+}
