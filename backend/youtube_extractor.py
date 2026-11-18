@@ -19,19 +19,19 @@ from urllib.request import Request, urlopen
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 NOISE_PATTERNS = [
-    r"[\(\[\{][^\)\]\}]*\b(official|video|lyric|lyrics|audio|hd|4k|hq|remastered|visualizer|mv|full\s+song|ost)\b[^\)\]\}]*[\)\]\}]",
-    r"\b(official\s+music\s+video|official\s+video|official\s+lyric\s+video|lyric\s+video|full\s+video|full\s+song|video\s+song|with\s+lyrics|lyrics|audio\s+song|4k\s+uhd|4k|hd|hq)\b",
+    r"[\(\[\{][^\)\]\}]*\b(official|video|lyric|lyrics|lyrical|audio|hd|4k|hq|remastered|visualizer|mv|full\s+song|ost|cover|karaoke)\b[^\)\]\}]*[\)\]\}]",
+    r"\b(official\s+music\s+video|official\s+video|official\s+lyric\s+video|lyrical\s+video|lyric\s+video|lyrical|full\s+video|full\s+song|video\s+song|with\s+lyrics|lyrics|audio\s+song|flute\s+cover|piano\s+cover|guitar\s+cover|cover\s+by|4k\s+uhd|4k|hd|hq)\b",
     r"\bcoke\s+studio\s*(?:pakistan|india|bangla|bharat)?\s*(?:season\s*\d+)?\s*(?:episode\s*\d+)?\b",
     r"\b(?:season\s*\d+|episode\s*\d+|ep\.?\s*\d+)\b",
 ]
 
 CHANNEL_SUFFIX_NOISE = re.compile(
-    r"\b(vevo|official|topic|music|records|entertainment|films|productions|pakistan|india|studios?)\b",
+    r"\b(vevo|official|topic|music|records|entertainment|films|productions|pakistan|india|studios?|t-series|tseries|saregama|sony|zee|yrf)\b",
     flags=re.IGNORECASE,
 )
 
 STOP_TOKENS = {
-    "the", "and", "for", "with", "from", "feat", "ft", "song", "full", "video", "audio", "official", "new", "by"
+    "the", "and", "for", "with", "from", "feat", "ft", "song", "full", "video", "audio", "official", "new", "by", "lyrical"
 }
 
 
@@ -293,11 +293,14 @@ def _extract_search_queries(raw_title: str, raw_channel: str) -> Tuple[List[str]
 
     queries: List[str] = []
     if segments:
+        primary_seg = segments[0]
+        if len(segments) >= 2:
+            # In multi-pipe Bollywood/Indian titles, the singer is frequently in the final pipe segment
+            queries.append(f"{primary_seg} {segments[-1]}".strip())
         joined = " ".join(segments[:3])
-        words = joined.split()[:9]
+        words = joined.split()[:8]
         queries.append(" ".join(words))
 
-        primary_seg = segments[0]
         if clean_channel and clean_channel.lower() not in primary_seg.lower():
             queries.append(f"{primary_seg} {clean_channel}".strip())
         if primary_seg not in queries:
@@ -314,14 +317,14 @@ def _extract_search_queries(raw_title: str, raw_channel: str) -> Tuple[List[str]
         if q_norm and q_norm.lower() not in {u.lower() for u in unique_queries}:
             unique_queries.append(q_norm)
 
-    # Core tokens from title for match validation
-    all_title_words = re.findall(r"[A-Za-z0-9]{3,}", " ".join(segments) if segments else cleaned)
+    # Core tokens from title (including 2-letter words like 'hi', 'ho', 'tu', 'se', 'na')
+    all_title_words = re.findall(r"[A-Za-z0-9]{2,}", " ".join(segments) if segments else cleaned)
     core_tokens = [
         _phonetic_token(w)
         for w in all_title_words
-        if w.lower() not in STOP_TOKENS and len(_phonetic_token(w)) >= 3
+        if w.lower() not in STOP_TOKENS and len(_phonetic_token(w)) >= 2
     ]
-    return unique_queries[:3], core_tokens
+    return unique_queries[:4], core_tokens
 
 
 def download_matched_studio_preview(
@@ -362,7 +365,7 @@ def download_matched_studio_preview(
                 artist_name = item.get("artistName") or ""
                 cand_tokens = {
                     _phonetic_token(w)
-                    for w in re.findall(r"[A-Za-z0-9]{3,}", f"{track_name} {artist_name}")
+                    for w in re.findall(r"[A-Za-z0-9]{2,}", f"{track_name} {artist_name}")
                 }
                 overlap = sum(1 for t in core_tokens if t in cand_tokens)
                 score = overlap / max(1.0, float(len(core_tokens)))
