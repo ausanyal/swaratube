@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   FluteType,
   InstrumentView,
@@ -41,7 +41,10 @@ export const NoteTimelineHighway: React.FC<NoteTimelineHighwayProps> = ({
   onSeek,
   onSetLoop,
 }) => {
+  const phraseScrollBoxRef = useRef<HTMLDivElement | null>(null);
   const activePhraseRef = useRef<HTMLDivElement | null>(null);
+  const userScrolledUntilRef = useRef<number>(0);
+  const [autoFollowSheet, setAutoFollowSheet] = useState<boolean>(true);
   const useFluteReg = instrument === 'flute' && fluteType === 'concert';
 
   const noteById = useMemo(() => {
@@ -83,15 +86,31 @@ export const NoteTimelineHighway: React.FC<NoteTimelineHighwayProps> = ({
     return null;
   }, [phrases, currentTime]);
 
-  // Auto-scroll active phrase into view smoothly inside phrase sheet container
+  // Scroll ONLY the inner .phrase-list-scroll container — NEVER call scrollIntoView()
+  // (which yanks the entire page/window viewport away from Flute, Piano, Guitar, or inputs!)
   useEffect(() => {
-    if (activePhraseId !== null && activePhraseRef.current) {
-      activePhraseRef.current.scrollIntoView({
+    if (!autoFollowSheet) return;
+    if (Date.now() < userScrolledUntilRef.current) return;
+    const container = phraseScrollBoxRef.current;
+    const row = activePhraseRef.current;
+    if (activePhraseId === null || !container || !row) return;
+
+    const cRect = container.getBoundingClientRect();
+    const rRect = row.getBoundingClientRect();
+    const rowTopInScroll = rRect.top - cRect.top + container.scrollTop;
+    const rowBottomInScroll = rowTopInScroll + rRect.height;
+
+    const visibleTop = container.scrollTop;
+    const visibleBottom = visibleTop + container.clientHeight;
+
+    if (rowTopInScroll < visibleTop + 12 || rowBottomInScroll > visibleBottom - 12) {
+      const targetScrollTop = Math.max(0, rowTopInScroll - container.clientHeight * 0.28);
+      container.scrollTo({
+        top: targetScrollTop,
         behavior: 'smooth',
-        block: 'nearest',
       });
     }
-  }, [activePhraseId]);
+  }, [activePhraseId, autoFollowSheet]);
 
   const playheadLeftPct = (LOOKBEHIND_SEC / WINDOW_SPAN) * 100;
 
@@ -196,14 +215,33 @@ export const NoteTimelineHighway: React.FC<NoteTimelineHighwayProps> = ({
             <span className="panel-eyebrow">Interactive Note Sheet</span>
             <h3 className="panel-title">Phrase-by-Phrase Notes ({phrases.length} Phrases)</h3>
           </div>
-          {loopRange && (
-            <button type="button" className="chip-btn active" onClick={() => onSetLoop(null)}>
-              ✕ Clear Loop ({formatSeconds(loopRange.start)}–{formatSeconds(loopRange.end)})
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className={`chip-btn ${autoFollowSheet ? 'active' : ''}`}
+              onClick={() => setAutoFollowSheet((v) => !v)}
+              title="Keep active phrase centered inside this sheet box without scrolling the main page"
+            >
+              {autoFollowSheet ? '✓ Auto-Scroll Box' : 'Auto-Scroll Off'}
             </button>
-          )}
+            {loopRange && (
+              <button type="button" className="chip-btn active" onClick={() => onSetLoop(null)}>
+                ✕ Clear Loop ({formatSeconds(loopRange.start)}–{formatSeconds(loopRange.end)})
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="phrase-list-scroll">
+        <div
+          ref={phraseScrollBoxRef}
+          className="phrase-list-scroll"
+          onWheel={() => {
+            userScrolledUntilRef.current = Date.now() + 6000;
+          }}
+          onTouchMove={() => {
+            userScrolledUntilRef.current = Date.now() + 6000;
+          }}
+        >
           {phrases.map((phrase, idx) => {
             const isCurrentPhrase = activePhraseId === phrase.id;
             const isLooped =
