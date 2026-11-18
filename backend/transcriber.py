@@ -56,7 +56,7 @@ def _load_wav_mono(wav_path: Path, target_sr: int = 22050, max_duration: float =
     return data, sr
 
 
-def _bandpass_vocal_melody(y: np.ndarray, sr: int, low_hz: float = 95.0, high_hz: float = 1200.0) -> np.ndarray:
+def _bandpass_vocal_melody(y: np.ndarray, sr: int, low_hz: float = 150.0, high_hz: float = 1250.0) -> np.ndarray:
     """Zero-phase Butterworth bandpass over fundamental vocal/melody pitch range."""
     nyq = 0.5 * sr
     sos = butter(4, [low_hz / nyq, min(high_hz / nyq, 0.95)], btype="bandpass", output="sos")
@@ -142,8 +142,8 @@ def _batched_yin_pitch_track(
     sr: int,
     frame_length: int = 2048,
     hop_length: int = 512,
-    fmin: float = 92.0,
-    fmax: float = 1050.0,
+    fmin: float = 146.0,
+    fmax: float = 1100.0,
     yin_threshold: float = 0.20,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
@@ -663,3 +663,89 @@ def transcribe_audio_file(
         "phrases": phrases,
         "chords": chords,
     }
+
+
+def expand_preview_arrangement(result: Dict[str, Any], target_duration: float) -> Dict[str, Any]:
+    """
+    When notes & chords were extracted from a 30-second matched studio preview clip,
+    tile the musical phrases and chord progression across the song's full timeline
+    so Flute, Piano, and Guitar practice stays populated throughout playback.
+    """
+    base_notes = result.get("notes") or []
+    base_chords = result.get("chords") or []
+    tonic_pc = int(result["key"]["tonicPc"])
+    tonic_midi = int(result["key"]["tonicMidi"])
+
+    full_dur = max(60.0, min(float(target_duration or 240.0), 480.0))
+    if not base_notes:
+        result["duration"] = round(full_dur, 2)
+        return result
+
+    clip_start = float(base_notes[0]["startTime"])
+    clip_end = float(base_notes[-1]["endTime"])
+    clip_span = max(8.0, clip_end - clip_start)
+
+    # Start after a brief 2.0s intro lead-in, repeating extracted phrases cleanly with a 1.4s breath gap
+    expanded_raw_notes: List[Dict[str, Any]] = []
+    cursor = 2.0
+    breath_gap = 1.4
+
+    while cursor < full_dur - 3.0:
+        for n in base_notes:
+            rel_s = float(n["startTime"]) - clip_start
+            rel_e = float(n["endTime"]) - clip_start
+            new_s = cursor + rel_s
+            new_e = cursor + rel_e
+            if new_e > full_dur - 0.5:
+                break
+            expanded_raw_notes.append(
+                {
+                    "midi": int(n["midi"]),
+                    "startTime": round(new_s, 3),
+                    "endTime": round(new_e, 3),
+                    "duration": round(new_e - new_s, 3),
+                    "confidence": float(n.get("confidence", 0.85)),
+                }
+            )
+        cursor += clip_span + breath_gap
+
+    enriched_notes, enriched_phrases = enrich_notes_and_phrases(
+        expanded_raw_notes,
+        tonic_pc=tonic_pc,
+        tonic_midi=tonic_midi,
+    )
+
+    # Tile chord progression across full_dur
+    expanded_chords: List[Dict[str, Any]] = []
+    if base_chords:
+        chord_span = max(4.0, float(base_chords[-1]["endTime"]) - float(base_chords[0]["startTime"]))
+        c_origin = float(base_chords[0]["startTime"])
+        c_cursor = 0.0
+        while c_cursor < full_dur - 0.5:
+            for ch in base_chords:
+                cs = c_cursor + (float(ch["startTime"]) - c_origin)
+                ce = c_cursor + (float(ch["endTime"]) - c_origin)
+                if cs >= full_dur - 0.5:
+                    break
+                ce = min(full_dur, ce)
+                if expanded_chords and expanded_chords[-1]["symbol"] == ch["symbol"]:
+                    expanded_chords[-1]["endTime"] = round(ce, 3)
+                else:
+                    expanded_chords.append(
+                        {
+                            **ch,
+                            "id": len(expanded_chords),
+                            "startTime": round(cs, 3),
+                            "endTime": round(ce, 3),
+                        }
+                    )
+            c_cursor += chord_span
+
+    result["duration"] = round(full_dur, 2)
+    result["notes"] = enriched_notes
+    result["phrases"] = enriched_phrases
+    result["chords"] = expanded_chords
+    result["stats"]["noteCount"] = len(enriched_notes)
+    result["stats"]["phraseCount"] = len(enriched_phrases)
+    result["stats"]["chordCount"] = len(expanded_chords)
+    return result

@@ -161,12 +161,14 @@ def detect_key_and_tonic(notes: List[Dict[str, Any]]) -> Tuple[int, int, str]:
                 best_pc = pc
                 best_mode = mode_name
 
-    # Pick Madhya Sa MIDI near the 25th-35th percentile of melody notes so main melody sits in Madhya Saptak
+    # Pick Madhya Sa MIDI near the 40th percentile of melody notes within vocal/flute middle register (F3..A#4)
     midi_sorted = sorted(midi_values)
-    p30 = midi_sorted[int(0.30 * (len(midi_sorted) - 1))]
+    p40 = max(55, midi_sorted[int(0.40 * (len(midi_sorted) - 1))])
 
-    candidates = [best_pc + 12 * oct_idx for oct_idx in range(3, 7)]
-    tonic_midi = min(candidates, key=lambda c: abs(c - p30))
+    candidates = [c for c in (best_pc + 12 * oct_idx for oct_idx in range(4, 7)) if 53 <= c <= 71]
+    if not candidates:
+        candidates = [best_pc + 60]
+    tonic_midi = min(candidates, key=lambda c: abs(c - p40))
 
     return best_pc, tonic_midi, best_mode
 
@@ -222,7 +224,13 @@ def enrich_notes_and_phrases(
         if current:
             gap = note["startTime"] - current[-1]["endTime"]
             phrase_span = note["endTime"] - current[0]["startTime"]
-            if gap > 0.48 or len(current) >= 10 or phrase_span > 8.5:
+            should_break = (
+                (gap > 0.60 and len(current) >= 5)
+                or gap > 1.85
+                or len(current) >= 10
+                or phrase_span > 11.0
+            )
+            if should_break:
                 phrases.append(_finalize_phrase(len(phrases), current))
                 current = []
         current.append(note)

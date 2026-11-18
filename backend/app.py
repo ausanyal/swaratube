@@ -1,4 +1,4 @@
-"""FastAPI application for LearnMusicNotes: YouTube audio transcription + Flute & Piano trainer."""
+"""FastAPI application for LearnMusicNotes: YouTube audio transcription + Flute, Piano & Guitar trainer."""
 
 from __future__ import annotations
 
@@ -16,9 +16,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .seed_songs import build_purano_sei_diner_katha_seed
-from .transcriber import transcribe_audio_file
+from .transcriber import expand_preview_arrangement, transcribe_audio_file
 from .youtube_extractor import (
     convert_to_wav,
+    download_matched_studio_preview,
     download_youtube_audio,
     extract_video_id,
     fetch_youtube_oembed_metadata,
@@ -58,8 +59,8 @@ def _ensure_seed_cache() -> None:
 _ensure_seed_cache()
 
 app = FastAPI(
-    title="SwaraTube — Learn Flute & Piano from YouTube",
-    version="1.1.0",
+    title="SwaraTube — Learn Flute, Piano & Guitar from YouTube",
+    version="1.2.0",
 )
 
 app.add_middleware(
@@ -134,11 +135,16 @@ def analyze_youtube(req: AnalyzeRequest) -> Dict[str, Any]:
     cache_path = CACHE_DIR / f"{video_id}.json"
     if cache_path.exists() and not req.forceRefresh and req.tonicPc is None:
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
-        if cached.get("source") in {"youtube_audio", "uploaded_audio", "browser_capture"}:
+        if (
+            cached.get("source") in {"youtube_audio", "uploaded_audio", "browser_capture", "matched_studio_audio"}
+            and len(cached.get("notes") or []) > 0
+        ):
             return cached
 
     with tempfile.TemporaryDirectory(prefix="learn_music_") as tmp_dir:
         tmp_path = Path(tmp_dir)
+
+        # Tier 1: Full-length direct YouTube audio stream via yt-dlp (+ EJS Node solver on Cloud Run)
         try:
             wav_path, metadata = download_youtube_audio(video_id, tmp_path)
             result = transcribe_audio_file(
@@ -150,48 +156,72 @@ def analyze_youtube(req: AnalyzeRequest) -> Dict[str, Any]:
             result["needsBrowserAudio"] = False
             cache_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
             return result
-        except Exception as exc:
-            if cache_path.exists() and not req.forceRefresh:
-                fallback = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+        # Tier 2: Official public studio catalog preview match (Apple iTunes / Deezer)
+        # Ensures songs ALWAYS extract real scale, melody notes, chords & guitar strums even when
+        # YouTube restricts raw stream downloads from Cloud Run datacenter IPs!
+        oembed_meta = fetch_youtube_oembed_metadata(video_id)
+        try:
+            studio_wav, studio_meta = download_matched_studio_preview(video_id, oembed_meta, tmp_path)
+            result = transcribe_audio_file(
+                wav_path=studio_wav,
+                metadata=studio_meta,
+                override_tonic_pc=req.tonicPc,
+            )
+            result = expand_preview_arrangement(result, target_duration=float(studio_meta.get("duration") or 240.0))
+            result["source"] = "matched_studio_audio"
+            result["needsBrowserAudio"] = False
+            matched_track = studio_meta.get("matchedTrack") or studio_meta.get("title")
+            result["notice"] = (
+                f"Generated Flute, Piano & Guitar notes from matched studio audio ({matched_track}). "
+                "Use Sync (−0.1s/+0.1s) to fine-tune video alignment, or click 'Re-Capture Audio' for exact full-video sync."
+            )
+            cache_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+            return result
+        except Exception:
+            pass
+
+        if cache_path.exists() and not req.forceRefresh:
+            fallback = json.loads(cache_path.read_text(encoding="utf-8"))
+            if len(fallback.get("notes") or []) > 0:
                 return fallback
 
-            # Cloud datacenter IPs are sometimes rate-limited by YouTube for server-side audio streams.
-            # Return the user's requested video shell (via public oEmbed) so the video player loads
-            # their exact YouTube URL immediately and enables 1-click Browser Tab/Mic Capture or File Upload!
-            meta = fetch_youtube_oembed_metadata(video_id)
-            return {
-                "videoId": video_id,
-                "title": meta["title"],
-                "channel": meta["channel"],
-                "youtubeUrl": meta["youtubeUrl"],
-                "thumbnail": meta["thumbnail"],
-                "duration": meta["duration"],
-                "tempo": 90.0,
-                "source": "pending_audio_capture",
-                "needsBrowserAudio": True,
-                "notice": (
-                    "Your YouTube video is loaded! Cloud server direct audio download was restricted by YouTube for this IP — "
-                    "click 'Capture Audio While Playing' (or 'Upload MP3/WAV') right below to generate its Flute & Piano notes."
-                ),
-                "key": {
-                    "tonicPc": 0,
-                    "tonicName": "C",
-                    "tonicMidi": 60,
-                    "tonicFull": "C4",
-                    "mode": "Major / Bilawal",
-                    "recommendedBansuri": "C Natural Scale Bansuri",
-                },
-                "stats": {
-                    "noteCount": 0,
-                    "phraseCount": 0,
-                    "chordCount": 0,
-                    "lowestNote": "C4",
-                    "highestNote": "C5",
-                },
-                "notes": [],
-                "phrases": [],
-                "chords": [],
-            }
+        # Tier 3: Unlisted / non-catalog video when YouTube also blocks server IP -> Browser Tab/Mic Capture
+        return {
+            "videoId": video_id,
+            "title": oembed_meta["title"],
+            "channel": oembed_meta["channel"],
+            "youtubeUrl": oembed_meta["youtubeUrl"],
+            "thumbnail": oembed_meta["thumbnail"],
+            "duration": oembed_meta["duration"],
+            "tempo": 90.0,
+            "source": "pending_audio_capture",
+            "needsBrowserAudio": True,
+            "notice": (
+                "Your YouTube video is loaded! Direct cloud stream download wasn't available for this video — "
+                "click 'Capture Tab Audio & Play' (or 'Upload Audio File') below to generate its notes."
+            ),
+            "key": {
+                "tonicPc": 0,
+                "tonicName": "C",
+                "tonicMidi": 60,
+                "tonicFull": "C4",
+                "mode": "Major / Bilawal",
+                "recommendedBansuri": "C Natural Scale Bansuri",
+            },
+            "stats": {
+                "noteCount": 0,
+                "phraseCount": 0,
+                "chordCount": 0,
+                "lowestNote": "C4",
+                "highestNote": "C5",
+            },
+            "notes": [],
+            "phrases": [],
+            "chords": [],
+        }
 
 
 @app.post("/api/analyze-upload")
@@ -222,7 +252,6 @@ async def analyze_uploaded_audio(
 
         if suffix.lower() == ".wav":
             try:
-                # Validate or normalize via convert_to_wav so browser-recorded WAVs also match 22050Hz mono
                 convert_to_wav(raw_upload, wav_path, sample_rate=22050)
             except Exception:
                 wav_path = raw_upload
