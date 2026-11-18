@@ -71,11 +71,20 @@ export const PracticeToolbar: React.FC<PracticeToolbarProps> = ({
             <button
               type="button"
               role="tab"
+              aria-selected={instrument === 'guitar'}
+              className={`seg-btn ${instrument === 'guitar' ? 'active' : ''}`}
+              onClick={() => onInstrumentChange('guitar')}
+            >
+              🎸 Guitar
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={instrument === 'both'}
               className={`seg-btn ${instrument === 'both' ? 'active' : ''}`}
               onClick={() => onInstrumentChange('both')}
             >
-              Dual View
+              All Studio
             </button>
           </div>
         </div>

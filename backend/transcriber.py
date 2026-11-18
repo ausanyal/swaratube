@@ -401,13 +401,45 @@ def _extract_melody_notes(
     return playable
 
 
+def _recommend_easy_capo(chords: List[Dict[str, Any]], tonic_pc: int) -> int:
+    """Find best capo fret (0..7) that turns song chords into open guitar shapes."""
+    easy_major = {0, 2, 4, 7, 9}  # C, D, E, G, A
+    easy_minor = {2, 4, 9}        # Dm, Em, Am
+    if not chords:
+        for capo in range(8):
+            if ((tonic_pc - capo) % 12) in easy_major:
+                return capo
+        return 0
+
+    best_capo = 0
+    best_score = -1e9
+    for capo in range(8):
+        score = 0.0
+        for ch in chords:
+            dur = max(0.5, float(ch["endTime"]) - float(ch["startTime"]))
+            shaped_pc = (int(ch["rootPc"]) - capo) % 12
+            qual = ch.get("quality", "maj")
+            if qual == "min" and shaped_pc in easy_minor:
+                score += dur * 2.0
+            elif qual != "min" and shaped_pc in easy_major:
+                score += dur * 2.0
+            elif qual != "min" and shaped_pc == 5:  # F / Fmaj7
+                score += dur * 1.1
+        # Slight preference for no-capo or lower capo frets when tied
+        score -= capo * 0.25
+        if score > best_score:
+            best_score = score
+            best_capo = capo
+    return best_capo
+
+
 def _compute_chroma_and_tempo(
     y_bg: np.ndarray,
     y_full: np.ndarray,
     sr: int,
     hop_length: int = 512,
-) -> Tuple[np.ndarray, float]:
-    """Compute 12-bin pitch-class chroma spectrogram (C..B) and estimated tempo BPM."""
+) -> Tuple[np.ndarray, float, str, str, float]:
+    """Compute 12-bin chroma, tempo BPM, time signature, recommended guitar strum ID, and beat phase offset."""
     n_fft = 4096
     freqs, _, zxx = stft(y_bg, fs=sr, nperseg=n_fft, noverlap=n_fft - hop_length, boundary="zeros")
     power = np.abs(zxx) ** 2
@@ -425,24 +457,48 @@ def _compute_chroma_and_tempo(
 
     chroma = np.dot(chroma_fb, np.sqrt(power))
 
-    # Estimate tempo via autocorrelation of spectral-flux onset envelope over [65..160] BPM
+    # Estimate tempo, meter (3/4 vs 4/4), and beat phase offset from onset envelope
     _, _, z_full = stft(y_full, fs=sr, nperseg=1024, noverlap=1024 - hop_length, boundary="zeros")
-    env = np.sum(np.maximum(0.0, np.diff(np.log1p(5.0 * np.abs(z_full)), axis=1)), axis=0)
-    env = env - np.mean(env)
+    raw_env = np.sum(np.maximum(0.0, np.diff(np.log1p(5.0 * np.abs(z_full)), axis=1)), axis=0)
+    env = raw_env - np.mean(raw_env)
+    fps = sr / float(hop_length)
+    time_sig = "4/4"
+    beat_offset = 0.0
+
     if len(env) > 120 and np.std(env) > 1e-6:
         ac = np.correlate(env, env, mode="full")[len(env) - 1 :]
-        fps = sr / float(hop_length)
         lag_min = max(4, int(fps * 60.0 / 155.0))
         lag_max = min(len(ac) - 1, int(fps * 60.0 / 64.0))
         if lag_max > lag_min:
             best_lag = lag_min + int(np.argmax(ac[lag_min:lag_max]))
             tempo = 60.0 * fps / float(best_lag)
+
+            if 4 * best_lag < len(ac):
+                triple_corr = float(ac[3 * best_lag])
+                quad_corr = float(ac[4 * best_lag])
+                if triple_corr > quad_corr * 1.08:
+                    time_sig = "6/8"
+
+            # Find beat grid phase alignment in [0, best_lag)
+            phase_scores = [float(np.sum(raw_env[p::best_lag])) for p in range(best_lag)]
+            best_phase = int(np.argmax(phase_scores))
+            beat_offset = round(best_phase / fps, 3)
         else:
             tempo = 92.0
     else:
         tempo = 92.0
 
-    return chroma, round(tempo, 1)
+    tempo = round(tempo, 1)
+    if time_sig == "6/8":
+        strum_id = "dadra_6"
+    elif tempo < 82.0:
+        strum_id = "ballad_4"
+    elif tempo > 114.0:
+        strum_id = "kaharva_4"
+    else:
+        strum_id = "island_4"
+
+    return chroma, tempo, time_sig, strum_id, beat_offset
 
 
 def _extract_chords(
@@ -452,9 +508,11 @@ def _extract_chords(
     tonic_pc: int,
     mode_name: str,
     hop_length: int = 512,
-) -> Tuple[List[Dict[str, Any]], float]:
-    """Extract bar-level smoothed left-hand piano chords."""
-    chroma, tempo = _compute_chroma_and_tempo(y_bg, y_full, sr=sr, hop_length=hop_length)
+) -> Tuple[List[Dict[str, Any]], float, Dict[str, Any]]:
+    """Extract bar-level smoothed chords and guitar rhythm metadata."""
+    chroma, tempo, time_sig, strum_id, beat_offset = _compute_chroma_and_tempo(
+        y_bg, y_full, sr=sr, hop_length=hop_length
+    )
     n_frames = chroma.shape[1]
     frame_dur = hop_length / float(sr)
     total_dur = n_frames * frame_dur
@@ -522,7 +580,13 @@ def _extract_chords(
     for idx, ch in enumerate(merged_chords):
         ch["id"] = idx
 
-    return merged_chords, tempo
+    guitar_meta = {
+        "timeSignature": time_sig,
+        "recommendedStrum": strum_id,
+        "beatOffset": beat_offset,
+        "recommendedCapo": _recommend_easy_capo(merged_chords, tonic_pc),
+    }
+    return merged_chords, tempo, guitar_meta
 
 
 def transcribe_audio_file(
@@ -553,7 +617,7 @@ def transcribe_audio_file(
         tonic_midi = detected_tonic_midi
 
     notes, phrases = enrich_notes_and_phrases(raw_notes, tonic_pc=tonic_pc, tonic_midi=tonic_midi)
-    chords, tempo = _extract_chords(
+    chords, tempo, guitar_meta = _extract_chords(
         y_bg=y_bg,
         y_full=y,
         sr=sr,
@@ -579,6 +643,7 @@ def transcribe_audio_file(
         "thumbnail": metadata["thumbnail"],
         "duration": round(metadata.get("duration") or duration, 2),
         "tempo": tempo,
+        "guitar": guitar_meta,
         "key": {
             "tonicPc": tonic_pc,
             "tonicName": tonic_name,

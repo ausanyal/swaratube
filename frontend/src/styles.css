@@ -1395,3 +1395,355 @@ select:focus-visible {
   align-items: center;
   gap: 8px;
 }
+
+/* Guitar Strum & Chord Trainer */
+.visualizers-stage.mode-guitar {
+  grid-template-columns: 1fr;
+}
+
+.visualizers-stage.mode-both .guitar-panel {
+  grid-column: 1 / -1;
+}
+
+.guitar-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.guitar-workbench-grid {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 18px;
+  align-items: stretch;
+}
+
+@media (max-width: 960px) {
+  .guitar-workbench-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.guitar-chord-box-card {
+  background: #0b1120;
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chord-box-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.guitar-chord-hero {
+  display: block;
+  font-size: 1.55rem;
+  font-weight: 800;
+  color: var(--accent-amber);
+  line-height: 1.15;
+}
+
+.capo-sound-note {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 0.74rem;
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.manual-strum-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.guitar-fretboard-svg {
+  width: 100%;
+  max-width: 240px;
+  margin: 0 auto;
+  display: block;
+}
+
+.base-fret-label {
+  fill: var(--accent-amber);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.string-mute-mark {
+  fill: #f87171;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.string-tuning-label {
+  fill: #94a3b8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.finger-num-text {
+  fill: #082f49;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.guitar-side-footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.next-chord-chip,
+.melody-tab-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.8rem;
+}
+
+.next-chord-chip strong {
+  color: #c7d2fe;
+}
+
+.melody-tab-chip strong {
+  color: #6ee7b7;
+}
+
+/* Right Column: Strum Sequencer & Acoustic Soundhole */
+.guitar-strum-stage {
+  background: #0b1120;
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.strum-stage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.strum-subtitle {
+  margin: 2px 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.tempo-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #e0f2fe;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.strum-steps-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.strum-step-card {
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: var(--bg-surface);
+  padding: 10px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  transition: transform 0.09s ease, border-color 0.09s ease, background-color 0.09s ease;
+}
+
+.strum-step-card.action-D .strum-arrow {
+  color: var(--accent-amber);
+}
+
+.strum-step-card.action-U .strum-arrow {
+  color: var(--accent-cyan);
+}
+
+.strum-step-card.action-rest {
+  opacity: 0.52;
+}
+
+.strum-arrow {
+  font-size: 1.55rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.strum-dir-word {
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.strum-beat-count {
+  margin-top: 2px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: #cbd5e1;
+}
+
+.strum-step-card.active {
+  transform: translateY(-3px) scale(1.04);
+  opacity: 1;
+  border-color: #fff;
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.45);
+}
+
+.strum-step-card.action-D.active {
+  background: rgba(245, 158, 11, 0.28);
+  border-color: var(--accent-amber);
+}
+
+.strum-step-card.action-U.active {
+  background: rgba(14, 165, 233, 0.28);
+  border-color: var(--accent-cyan);
+}
+
+/* Interactive 6-String Acoustic Soundhole Strum Zone */
+.acoustic-strum-zone {
+  position: relative;
+  height: 128px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, #3b2313 0%, #29170b 50%, #1c1008 100%);
+  border: 1px solid #784721;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  padding: 10px 16px;
+}
+
+.soundhole-circle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #060403 65%, #170d06 100%);
+  box-shadow: inset 0 4px 12px rgba(0, 0, 0, 0.85);
+}
+
+.soundhole-rosette {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  border: 3px dashed rgba(229, 185, 118, 0.42);
+  pointer-events: none;
+}
+
+.horizontal-strings-stack {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 100%;
+}
+
+.guitar-h-string {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.h-string-tag {
+  width: 36px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #fde68a;
+  font-variant-numeric: tabular-nums;
+}
+
+.guitar-h-string.muted .h-string-tag {
+  color: #94a3b8;
+  opacity: 0.6;
+}
+
+.h-string-wire {
+  flex: 1;
+  background: linear-gradient(90deg, #cbd5e1, #f8fafc, #94a3b8);
+  border-radius: 2px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+}
+
+.guitar-h-string.muted .h-string-wire {
+  opacity: 0.28;
+}
+
+.guitar-h-string.vibrating .h-string-wire {
+  background: var(--accent-amber);
+  box-shadow: 0 0 8px var(--accent-amber);
+}
+
+.pick-sweep-indicator {
+  position: absolute;
+  right: 18px;
+  z-index: 4;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+.pick-sweep-indicator.dir-D {
+  background: var(--accent-amber);
+  color: #1c1917;
+}
+
+.pick-sweep-indicator.dir-U {
+  background: var(--accent-cyan);
+  color: #082f49;
+}
+
+.finger-legend-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.finger-legend-bar strong {
+  color: #e2e8f0;
+}

@@ -259,6 +259,12 @@ def build_purano_sei_diner_katha_seed() -> Dict[str, Any]:
         "duration": total_dur,
         "tempo": 84.0,
         "source": "reference_swaralipi",
+        "guitar": {
+            "timeSignature": "6/8",
+            "recommendedStrum": "dadra_6",
+            "beatOffset": 0.0,
+            "recommendedCapo": 0,
+        },
         "key": {
             "tonicPc": tonic_pc,
             "tonicName": "C",

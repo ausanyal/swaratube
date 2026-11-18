@@ -65,12 +65,14 @@ export const NoteTimelineHighway: React.FC<NoteTimelineHighwayProps> = ({
     return notes.filter((n) => n.endTime >= tMin && n.startTime <= tMax);
   }, [notes, currentTime]);
 
+  const showChordTrack = showChords || instrument === 'guitar';
+
   const visibleChords = useMemo(() => {
-    if (!showChords) return [];
+    if (!showChordTrack) return [];
     const tMin = currentTime - LOOKBEHIND_SEC;
     const tMax = currentTime + LOOKAHEAD_SEC;
     return chords.filter((c) => c.endTime >= tMin && c.startTime <= tMax);
-  }, [chords, currentTime, showChords]);
+  }, [chords, currentTime, showChordTrack]);
 
   const activePhraseId = useMemo(() => {
     for (const p of phrases) {
@@ -97,6 +99,8 @@ export const NoteTimelineHighway: React.FC<NoteTimelineHighwayProps> = ({
     onSeek(note.startTime);
     if (instrument === 'piano') {
       synthEngine.playPianoNote(note.midi, 0.55, 0.5);
+    } else if (instrument === 'guitar') {
+      synthEngine.playGuitarString(note.midi, 0, 0.9, 0.48);
     } else {
       synthEngine.playFluteNote(useFluteReg ? note.fluteMidi : note.midi, 0.55, 0.5);
     }
@@ -167,7 +171,7 @@ export const NoteTimelineHighway: React.FC<NoteTimelineHighwayProps> = ({
           })}
 
           {/* Optional Chord Lane along bottom */}
-          {showChords &&
+          {showChordTrack &&
             visibleChords.map((ch) => {
               const leftPct = ((ch.startTime - (currentTime - LOOKBEHIND_SEC)) / WINDOW_SPAN) * 100;
               const widthPct = Math.max(3, ((ch.endTime - ch.startTime) / WINDOW_SPAN) * 100);

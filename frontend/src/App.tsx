@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FluteVisualizer } from './components/FluteVisualizer';
+import { GuitarVisualizer } from './components/GuitarVisualizer';
 import { NoteTimelineHighway } from './components/NoteTimelineHighway';
 import { PianoVisualizer } from './components/PianoVisualizer';
 import { PracticeToolbar } from './components/PracticeToolbar';
@@ -13,6 +14,12 @@ import type {
   SongNote,
   SongSummary,
 } from './types';
+import {
+  STRUM_PATTERNS,
+  computeBestCapoFret,
+  getChordStringMidis,
+  getGuitarShapeForChord,
+} from './utils/guitarChords';
 import { formatSeconds, transformSongView } from './utils/musicMapping';
 import { synthEngine } from './utils/synthAudio';
 
@@ -29,6 +36,8 @@ export const App: React.FC = () => {
   const [fluteType, setFluteType] = useState<FluteType>('bansuri');
   const [notation, setNotation] = useState<NotationSystem>('both');
   const [showChords, setShowChords] = useState<boolean>(true);
+  const [guitarPatternId, setGuitarPatternId] = useState<string>('island_4');
+  const [guitarCapoMode, setGuitarCapoMode] = useState<'auto' | number>('auto');
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
   const [transpose, setTranspose] = useState<number>(0);
   const [customTonicPc, setCustomTonicPc] = useState<number | null>(null);
@@ -364,6 +373,19 @@ export const App: React.FC = () => {
     }
   };
 
+  // Sync recommended guitar strumming pattern whenever a new song loads
+  useEffect(() => {
+    if (song) {
+      const rec = song.guitar?.recommendedStrum;
+      if (rec && STRUM_PATTERNS.some((p) => p.id === rec)) {
+        setGuitarPatternId(rec);
+      } else {
+        setGuitarPatternId(song.tempo < 82 ? 'ballad_4' : 'island_4');
+      }
+      setGuitarCapoMode('auto');
+    }
+  }, [song]);
+
   const transformed = useMemo(() => {
     if (!song) return null;
     return transformSongView(song, transpose, customTonicPc);
@@ -371,13 +393,14 @@ export const App: React.FC = () => {
 
   const effectiveTime = Math.max(0, currentTime + syncOffset);
 
-  const { activeNote, nextNote, activeChord } = useMemo<{
+  const { activeNote, nextNote, activeChord, nextChord } = useMemo<{
     activeNote: SongNote | null;
     nextNote: SongNote | null;
     activeChord: SongChord | null;
+    nextChord: SongChord | null;
   }>(() => {
     if (!transformed) {
-      return { activeNote: null, nextNote: null, activeChord: null };
+      return { activeNote: null, nextNote: null, activeChord: null, nextChord: null };
     }
 
     let foundActive: SongNote | null = null;
@@ -397,24 +420,42 @@ export const App: React.FC = () => {
     }
 
     let foundChord: SongChord | null = null;
-    for (const ch of transformed.chords) {
+    let foundNextChord: SongChord | null = null;
+    for (let i = 0; i < transformed.chords.length; i++) {
+      const ch = transformed.chords[i];
       if (effectiveTime >= ch.startTime && effectiveTime < ch.endTime) {
         foundChord = ch;
+        foundNextChord = transformed.chords[i + 1] ?? null;
+        break;
+      }
+      if (ch.startTime > effectiveTime) {
+        foundNextChord = ch;
         break;
       }
     }
 
-    return { activeNote: foundActive, nextNote: foundNext, activeChord: foundChord };
+    return {
+      activeNote: foundActive,
+      nextNote: foundNext,
+      activeChord: foundChord,
+      nextChord: foundNextChord,
+    };
   }, [transformed, effectiveTime]);
 
   const lastPlayedNoteIdRef = useRef<number | null>(null);
   const lastPlayedChordIdRef = useRef<number | null>(null);
+  const lastStrumBucketRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!isPlaying || !synthGuideEnabled) {
       lastPlayedNoteIdRef.current = null;
       lastPlayedChordIdRef.current = null;
+      lastStrumBucketRef.current = null;
       return;
+    }
+
+    if (instrument === 'guitar') {
+      return; // Guitar mode uses rhythmic strum guide below
     }
 
     if (activeNote && activeNote.id !== lastPlayedNoteIdRef.current) {
@@ -427,16 +468,68 @@ export const App: React.FC = () => {
         synthEngine.playFluteNote(m, scaledDur, 0.52);
       } else {
         const m = fluteType === 'concert' ? activeNote.fluteMidi : activeNote.midi;
-        synthEngine.playFluteNote(m, scaledDur, 0.42);
-        synthEngine.playPianoNote(activeNote.midi, scaledDur, 0.25);
+        synthEngine.playFluteNote(m, scaledDur, 0.4);
+        synthEngine.playPianoNote(activeNote.midi, scaledDur, 0.22);
       }
     } else if (!activeNote) {
       lastPlayedNoteIdRef.current = null;
     }
   }, [activeNote, isPlaying, synthGuideEnabled, instrument, fluteType, playbackRate]);
 
+  // Rhythmic Acoustic Guitar Strumming Audio Guide (when Synth Guide ON in Guitar or All Studio mode)
   useEffect(() => {
-    if (!isPlaying || !synthGuideEnabled || !showChords || instrument === 'flute') {
+    if (!isPlaying || !synthGuideEnabled || !song || !transformed) {
+      lastStrumBucketRef.current = null;
+      return;
+    }
+    if (instrument !== 'guitar' && instrument !== 'both') {
+      lastStrumBucketRef.current = null;
+      return;
+    }
+
+    const pattern = STRUM_PATTERNS.find((p) => p.id === guitarPatternId) ?? STRUM_PATTERNS[0];
+    const safeTempo = Math.max(45, song.tempo || 88);
+    const cycleSec = pattern.beatsPerCycle * (60 / safeTempo);
+    const stepSec = cycleSec / pattern.steps.length;
+    const beatOffset = song.guitar?.beatOffset ?? 0;
+    const rel = Math.max(0, effectiveTime - beatOffset);
+    const globalBucket = Math.floor(rel / stepSec);
+
+    if (globalBucket !== lastStrumBucketRef.current) {
+      lastStrumBucketRef.current = globalBucket;
+      const stepIdx = globalBucket % pattern.steps.length;
+      const step = pattern.steps[stepIdx];
+      if (step && step.action !== 'rest') {
+        const recCapo =
+          song.guitar?.recommendedCapo ??
+          computeBestCapoFret(transformed.chords, transformed.effectiveTonicPc);
+        const effCapo = guitarCapoMode === 'auto' ? recCapo : guitarCapoMode;
+        const rootPc = activeChord ? activeChord.rootPc : transformed.effectiveTonicPc;
+        const qual = activeChord ? activeChord.quality : 'maj';
+        const shape = getGuitarShapeForChord(rootPc, qual, effCapo, true);
+        const midis = getChordStringMidis(shape, effCapo);
+        synthEngine.playGuitarStrum(
+          midis,
+          step.action,
+          Boolean(step.accent),
+          instrument === 'guitar' ? 0.3 : 0.16
+        );
+      }
+    }
+  }, [
+    effectiveTime,
+    isPlaying,
+    synthGuideEnabled,
+    instrument,
+    song,
+    transformed,
+    guitarPatternId,
+    guitarCapoMode,
+    activeChord,
+  ]);
+
+  useEffect(() => {
+    if (!isPlaying || !synthGuideEnabled || !showChords || instrument !== 'piano') {
       lastPlayedChordIdRef.current = null;
       return;
     }
@@ -474,7 +567,9 @@ export const App: React.FC = () => {
           </div>
           <div>
             <h1 className="brand-title">SwaraTube Studio</h1>
-            <p className="brand-subtitle">Learn Flute (Bansuri &amp; Concert) &amp; Piano from any YouTube song</p>
+            <p className="brand-subtitle">
+              Learn Flute (Bansuri &amp; Concert), Piano, &amp; Guitar Strumming from any YouTube song
+            </p>
           </div>
         </div>
 
@@ -573,11 +668,11 @@ export const App: React.FC = () => {
       {!song && (
         <section className="hero-launcher-card" aria-label="Start with any YouTube song">
           <div className="hero-badge">Privacy-Enhanced · No Account Required</div>
-          <h2>Turn Any YouTube Song into Synced Flute &amp; Piano Notes</h2>
+          <h2>Turn Any YouTube Song into Synced Flute, Piano &amp; Guitar Strums</h2>
           <p>
-            Paste any YouTube song URL below to isolate its lead vocal/melody and practice with live-highlighted{' '}
-            <strong>6-Hole Indian Bansuri (Sa Re Ga)</strong>, <strong>Western Concert Flute</strong>, and{' '}
-            <strong>Grand Piano + Left-Hand Chords</strong>.
+            Paste any YouTube song URL below to isolate its lead vocal/melody &amp; chords and practice with{' '}
+            <strong>6-Hole Indian Bansuri (Sa Re Ga)</strong>, <strong>Western Concert Flute</strong>,{' '}
+            <strong>Grand Piano</strong>, and <strong>Acoustic Guitar Chords &amp; Strumming Patterns</strong>.
           </p>
 
           <form className="hero-url-form" onSubmit={handleAnalyzeSubmit}>
@@ -764,6 +859,24 @@ export const App: React.FC = () => {
                 onToggleChords={() => setShowChords((v) => !v)}
                 notation={notation}
                 tonicMidi={transformed.effectiveTonicMidi}
+              />
+            )}
+
+            {(instrument === 'guitar' || instrument === 'both') && (
+              <GuitarVisualizer
+                activeChord={activeChord}
+                nextChord={nextChord}
+                allChords={transformed.chords}
+                activeNote={activeNote}
+                currentTime={effectiveTime}
+                tempo={song.tempo}
+                isPlaying={isPlaying}
+                tonicPc={transformed.effectiveTonicPc}
+                guitarMeta={song.guitar}
+                selectedPatternId={guitarPatternId}
+                onPatternChange={setGuitarPatternId}
+                capoMode={guitarCapoMode}
+                onCapoModeChange={setGuitarCapoMode}
               />
             )}
           </div>

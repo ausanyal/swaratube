@@ -64,6 +64,13 @@ export interface SongKeyInfo {
   recommendedBansuri: string;
 }
 
+export interface GuitarMeta {
+  timeSignature: string;
+  recommendedStrum: string;
+  beatOffset: number;
+  recommendedCapo: number;
+}
+
 export interface SongData {
   videoId: string;
   title: string;
@@ -75,6 +82,7 @@ export interface SongData {
   source?: string;
   needsBrowserAudio?: boolean;
   notice?: string;
+  guitar?: GuitarMeta;
   key: SongKeyInfo;
   stats: {
     noteCount: number;
@@ -100,7 +108,7 @@ export interface SongSummary {
   source?: string;
 }
 
-export type InstrumentView = 'flute' | 'piano' | 'both';
+export type InstrumentView = 'flute' | 'piano' | 'guitar' | 'both';
 export type FluteType = 'bansuri' | 'concert';
 export type NotationSystem = 'sargam' | 'western' | 'both';
 
