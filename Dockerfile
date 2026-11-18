@@ -16,6 +16,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Provide Node.js binary for yt-dlp signature extraction
+COPY --from=frontend-builder /usr/local/bin/node /usr/local/bin/node
+
 WORKDIR /app
 COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \

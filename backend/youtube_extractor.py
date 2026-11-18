@@ -1,24 +1,38 @@
-"""YouTube URL parsing, audio downloading, and WAV conversion."""
+"""YouTube URL parsing, cookie-free oEmbed metadata lookup, audio downloading, and WAV conversion."""
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
+from urllib.request import Request, urlopen
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
 def extract_video_id(url_or_id: str) -> str:
-    """Extract clean 11-character YouTube video ID, stripping radio/playlist params."""
-    raw = url_or_id.strip()
+    """
+    Extract clean 11-character YouTube video ID from any URL format or share text,
+    stripping personal radio/playlist/tracking parameters (list=, start_radio=, si=, pp=).
+    """
+    raw = (url_or_id or "").strip()
+    if not raw:
+        raise ValueError("Please enter a YouTube URL or 11-character Video ID.")
+
     if VIDEO_ID_RE.match(raw):
         return raw
 
-    parsed = urlparse(raw)
+    # Extract embedded URL if user pasted mobile share text like "Listen to X https://youtu.be/..."
+    url_match = re.search(r"(https?://[^\s]+|(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/[^\s]+)", raw)
+    candidate_url = url_match.group(1) if url_match else raw
+    if not candidate_url.startswith(("http://", "https://")):
+        candidate_url = "https://" + candidate_url
+
+    parsed = urlparse(candidate_url)
     host = (parsed.netloc or "").lower()
 
     if "youtu.be" in host:
@@ -38,11 +52,41 @@ def extract_video_id(url_or_id: str) -> str:
                 return parts[1]
 
     # Fallback regex search anywhere in string
-    m = re.search(r"(?:v=|youtu\.be/|embed/|shorts/)([A-Za-z0-9_-]{11})", raw)
+    m = re.search(r"(?:v=|youtu\.be/|embed/|shorts/|live/)([A-Za-z0-9_-]{11})", raw)
     if m:
         return m.group(1)
 
-    raise ValueError(f"Could not extract a valid 11-character YouTube video ID from: {url_or_id}")
+    raise ValueError(
+        "Could not find a valid YouTube Video ID. Paste a link like https://www.youtube.com/watch?v=... or https://youtu.be/..."
+    )
+
+
+def fetch_youtube_oembed_metadata(video_id: str) -> Dict[str, Any]:
+    """Fetch public, cookie-free video title & author via YouTube's official oEmbed endpoint."""
+    canonical_url = f"https://www.youtube.com/watch?v={video_id}"
+    oembed_url = f"https://www.youtube.com/oembed?url={quote(canonical_url, safe='')}&format=json"
+    title = f"YouTube Song ({video_id})"
+    channel = "YouTube Artist"
+    thumbnail = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+
+    try:
+        req = Request(oembed_url, headers={"User-Agent": "SwaraTubeStudio/1.0"})
+        with urlopen(req, timeout=6) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+            title = payload.get("title") or title
+            channel = payload.get("author_name") or channel
+            thumbnail = payload.get("thumbnail_url") or thumbnail
+    except Exception:
+        pass
+
+    return {
+        "videoId": video_id,
+        "title": title,
+        "channel": channel,
+        "duration": 240.0,
+        "thumbnail": thumbnail,
+        "youtubeUrl": canonical_url,
+    }
 
 
 def get_ffmpeg_binary() -> Optional[str]:
@@ -59,7 +103,7 @@ def get_ffmpeg_binary() -> Optional[str]:
 
 
 def convert_to_wav(input_path: Path, output_wav: Path, sample_rate: int = 22050) -> Path:
-    """Convert downloaded audio file into mono 16-bit PCM WAV."""
+    """Convert downloaded or recorded audio/webm/mp3/m4a file into mono 16-bit PCM WAV."""
     ffmpeg_bin = get_ffmpeg_binary()
     errors = []
 
@@ -106,7 +150,7 @@ def convert_to_wav(input_path: Path, output_wav: Path, sample_rate: int = 22050)
 
 
 def download_youtube_audio(video_id: str, work_dir: Path) -> Tuple[Path, Dict[str, Any]]:
-    """Download single YouTube video's audio stream and convert to mono 22050Hz WAV."""
+    """Download single YouTube video's audio stream (cookie-free) and convert to mono 22050Hz WAV."""
     import yt_dlp
 
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -116,23 +160,34 @@ def download_youtube_audio(video_id: str, work_dir: Path) -> Tuple[Path, Dict[st
 
     ffmpeg_bin = get_ffmpeg_binary()
 
+    # Try lightweight embedded/VR/mobile clients first (less prone to datacenter blocks) then web
     client_attempts = [
+        {"extractor_args": {"youtube": {"player_client": ["android_vr"]}}},
+        {"extractor_args": {"youtube": {"player_client": ["tv", "web_embedded"]}}},
+        {"extractor_args": {"youtube": {"player_client": ["mweb", "ios"]}}},
         {},
-        {"extractor_args": {"youtube": {"player_client": ["ios", "web"]}}},
-        {"extractor_args": {"youtube": {"player_client": ["android", "web"]}}},
     ]
 
     last_err: Optional[Exception] = None
     info: Optional[Dict[str, Any]] = None
 
     for extra_opts in client_attempts:
+        # Clean up any partial artifacts between attempts
+        for part in work_dir.glob(f"{video_id}.*"):
+            try:
+                part.unlink(missing_ok=True)
+            except Exception:
+                pass
+
         ydl_opts: Dict[str, Any] = {
-            "format": "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best",
+            "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
             "outtmpl": out_tmpl,
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
-            "retries": 3,
+            "geo_bypass": True,
+            "cachedir": False,
+            "retries": 2,
             **extra_opts,
         }
         if ffmpeg_bin:
@@ -142,14 +197,21 @@ def download_youtube_audio(video_id: str, work_dir: Path) -> Tuple[Path, Dict[st
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 extracted = ydl.extract_info(canonical_url, download=True)
                 info = ydl.sanitize_info(extracted) if extracted else {}
-            break
+            candidates = [
+                p
+                for p in work_dir.glob(f"{video_id}.*")
+                if p.suffix.lower() not in {".wav", ".json", ".part", ".ytdl"} and p.stat().st_size > 1024
+            ]
+            if candidates:
+                break
+            info = None
         except Exception as exc:
             last_err = exc
+            info = None
 
     if info is None:
         raise RuntimeError(f"Failed to download YouTube audio for {video_id}: {last_err}")
 
-    # Find downloaded media file
     candidates = [
         p
         for p in work_dir.glob(f"{video_id}.*")
@@ -161,7 +223,6 @@ def download_youtube_audio(video_id: str, work_dir: Path) -> Tuple[Path, Dict[st
     downloaded_file = max(candidates, key=lambda p: p.stat().st_size)
     convert_to_wav(downloaded_file, wav_path, sample_rate=22050)
 
-    # Clean up compressed file after WAV conversion
     try:
         downloaded_file.unlink(missing_ok=True)
     except Exception:

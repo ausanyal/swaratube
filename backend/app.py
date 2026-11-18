@@ -17,7 +17,12 @@ from pydantic import BaseModel
 
 from .seed_songs import build_purano_sei_diner_katha_seed
 from .transcriber import transcribe_audio_file
-from .youtube_extractor import convert_to_wav, download_youtube_audio, extract_video_id
+from .youtube_extractor import (
+    convert_to_wav,
+    download_youtube_audio,
+    extract_video_id,
+    fetch_youtube_oembed_metadata,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -43,7 +48,7 @@ CACHE_DIR = _resolve_writable_cache_dir()
 
 
 def _ensure_seed_cache() -> None:
-    """Seed Q2aPJT1Ex0k if not yet present in cache."""
+    """Seed Q2aPJT1Ex0k sample arrangement if not yet present in cache."""
     seed_file = CACHE_DIR / "Q2aPJT1Ex0k.json"
     if not seed_file.exists():
         data = build_purano_sei_diner_katha_seed()
@@ -54,7 +59,7 @@ _ensure_seed_cache()
 
 app = FastAPI(
     title="SwaraTube — Learn Flute & Piano from YouTube",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 app.add_middleware(
@@ -75,6 +80,15 @@ class AnalyzeRequest(BaseModel):
 @app.get("/api/health")
 def health_check() -> Dict[str, Any]:
     return {"status": "ok", "cachedSongs": len(list(CACHE_DIR.glob("*.json")))}
+
+
+@app.get("/api/youtube-meta")
+def get_youtube_meta(url: str) -> Dict[str, Any]:
+    try:
+        video_id = extract_video_id(url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return fetch_youtube_oembed_metadata(video_id)
 
 
 @app.get("/api/songs")
@@ -120,8 +134,7 @@ def analyze_youtube(req: AnalyzeRequest) -> Dict[str, Any]:
     cache_path = CACHE_DIR / f"{video_id}.json"
     if cache_path.exists() and not req.forceRefresh and req.tonicPc is None:
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
-        # If cached is already from live audio (not seed), return immediately
-        if cached.get("source") == "youtube_audio":
+        if cached.get("source") in {"youtube_audio", "uploaded_audio", "browser_capture"}:
             return cached
 
     with tempfile.TemporaryDirectory(prefix="learn_music_") as tmp_dir:
@@ -134,24 +147,51 @@ def analyze_youtube(req: AnalyzeRequest) -> Dict[str, Any]:
                 override_tonic_pc=req.tonicPc,
             )
             result["source"] = "youtube_audio"
+            result["needsBrowserAudio"] = False
             cache_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
             return result
         except Exception as exc:
-            # If live YouTube download is blocked by network/proxy and we have a cached/seed fallback, return it with notice
             if cache_path.exists() and not req.forceRefresh:
                 fallback = json.loads(cache_path.read_text(encoding="utf-8"))
-                fallback["notice"] = (
-                    f"Loaded cached arrangement (live YouTube audio download encountered: {exc}). "
-                    "You can also upload an MP3/M4A/WAV file directly to transcribe offline."
-                )
                 return fallback
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    f"Could not extract audio from YouTube ({exc}). "
-                    "If your network restricts YouTube downloads, use 'Upload Audio File' to transcribe an MP3/WAV synced to this video."
+
+            # Cloud datacenter IPs are sometimes rate-limited by YouTube for server-side audio streams.
+            # Return the user's requested video shell (via public oEmbed) so the video player loads
+            # their exact YouTube URL immediately and enables 1-click Browser Tab/Mic Capture or File Upload!
+            meta = fetch_youtube_oembed_metadata(video_id)
+            return {
+                "videoId": video_id,
+                "title": meta["title"],
+                "channel": meta["channel"],
+                "youtubeUrl": meta["youtubeUrl"],
+                "thumbnail": meta["thumbnail"],
+                "duration": meta["duration"],
+                "tempo": 90.0,
+                "source": "pending_audio_capture",
+                "needsBrowserAudio": True,
+                "notice": (
+                    "Your YouTube video is loaded! Cloud server direct audio download was restricted by YouTube for this IP — "
+                    "click 'Capture Audio While Playing' (or 'Upload MP3/WAV') right below to generate its Flute & Piano notes."
                 ),
-            ) from exc
+                "key": {
+                    "tonicPc": 0,
+                    "tonicName": "C",
+                    "tonicMidi": 60,
+                    "tonicFull": "C4",
+                    "mode": "Major / Bilawal",
+                    "recommendedBansuri": "C Natural Scale Bansuri",
+                },
+                "stats": {
+                    "noteCount": 0,
+                    "phraseCount": 0,
+                    "chordCount": 0,
+                    "lowestNote": "C4",
+                    "highestNote": "C5",
+                },
+                "notes": [],
+                "phrases": [],
+                "chords": [],
+            }
 
 
 @app.post("/api/analyze-upload")
@@ -160,15 +200,18 @@ async def analyze_uploaded_audio(
     youtubeUrl: str = Form(""),
     title: str = Form(""),
     tonicPc: Optional[int] = Form(None),
+    sourceType: str = Form("uploaded_audio"),
 ) -> Dict[str, Any]:
     video_id = "custom_audio"
+    oembed_meta: Optional[Dict[str, Any]] = None
     if youtubeUrl.strip():
         try:
             video_id = extract_video_id(youtubeUrl)
+            oembed_meta = fetch_youtube_oembed_metadata(video_id)
         except ValueError:
             video_id = "custom_audio"
 
-    suffix = Path(file.filename or "upload.wav").suffix or ".wav"
+    suffix = Path(file.filename or "upload.webm").suffix or ".webm"
     with tempfile.TemporaryDirectory(prefix="learn_upload_") as tmp_dir:
         tmp_path = Path(tmp_dir)
         raw_upload = tmp_path / f"input{suffix}"
@@ -178,14 +221,25 @@ async def analyze_uploaded_audio(
             shutil.copyfileobj(file.file, out_f)
 
         if suffix.lower() == ".wav":
-            wav_path = raw_upload
+            try:
+                # Validate or normalize via convert_to_wav so browser-recorded WAVs also match 22050Hz mono
+                convert_to_wav(raw_upload, wav_path, sample_rate=22050)
+            except Exception:
+                wav_path = raw_upload
         else:
             convert_to_wav(raw_upload, wav_path, sample_rate=22050)
 
+        resolved_title = (
+            title.strip()
+            or (oembed_meta["title"] if oembed_meta else "")
+            or Path(file.filename or "Uploaded Song").stem
+        )
+        resolved_channel = oembed_meta["channel"] if oembed_meta else "Uploaded Audio"
+
         metadata = {
             "videoId": video_id,
-            "title": title.strip() or Path(file.filename or "Uploaded Song").stem,
-            "channel": "Uploaded Audio",
+            "title": resolved_title,
+            "channel": resolved_channel,
             "duration": 0.0,
             "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg" if video_id != "custom_audio" else "",
             "youtubeUrl": f"https://www.youtube.com/watch?v={video_id}" if video_id != "custom_audio" else "",
@@ -196,7 +250,8 @@ async def analyze_uploaded_audio(
             metadata=metadata,
             override_tonic_pc=tonicPc,
         )
-        result["source"] = "uploaded_audio"
+        result["source"] = sourceType
+        result["needsBrowserAudio"] = False
         cache_path = CACHE_DIR / f"{video_id}.json"
         cache_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
         return result

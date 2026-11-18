@@ -73,6 +73,7 @@ export interface SongData {
   duration: number;
   tempo: number;
   source?: string;
+  needsBrowserAudio?: boolean;
   notice?: string;
   key: SongKeyInfo;
   stats: {

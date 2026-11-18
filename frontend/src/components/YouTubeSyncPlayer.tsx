@@ -3,6 +3,7 @@ import { formatSeconds } from '../utils/musicMapping';
 
 interface YTPlayerInstance {
   destroy: () => void;
+  getIframe?: () => HTMLIFrameElement;
   getCurrentTime: () => number;
   getDuration: () => number;
   getPlayerState: () => number;
@@ -21,6 +22,7 @@ declare global {
       Player: new (
         element: HTMLElement | string,
         options: {
+          host?: string;
           videoId: string;
           playerVars?: Record<string, number | string>;
           events?: {
@@ -104,13 +106,14 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
   const timeRef = useRef(currentTime);
   timeRef.current = currentTime;
 
-  // Initialize YouTube IFrame Player whenever videoId changes
+  // Initialize Privacy-Enhanced (cookie-free youtube-nocookie.com) player whenever videoId changes
   useEffect(() => {
     setYtReady(false);
     if (!videoId || videoId === 'custom_audio') {
       setSoloClockMode(true);
       return;
     }
+    setSoloClockMode(false);
 
     let cancelled = false;
     loadYouTubeApi(() => {
@@ -130,22 +133,28 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
       mountRef.current.appendChild(child);
 
       playerRef.current = new window.YT.Player(child, {
+        host: 'https://www.youtube-nocookie.com',
         videoId,
         playerVars: {
           playsinline: 1,
           rel: 0,
+          iv_load_policy: 3,
           modestbranding: 1,
           origin: window.location.origin,
         },
         events: {
           onReady: (e) => {
             if (cancelled) return;
-            setYtReady(true);
             try {
+              const iframe = e.target.getIframe?.();
+              if (iframe) {
+                iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+              }
               e.target.setPlaybackRate(playbackRate);
             } catch {
-              // ignore rate error
+              // ignore attribute/rate error
             }
+            setYtReady(true);
           },
           onStateChange: (e) => {
             if (cancelled) return;
@@ -178,7 +187,6 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
     };
   }, [videoId]);
 
-  // Apply playbackRate updates to YouTube player
   useEffect(() => {
     if (ytReady && playerRef.current && !soloClockMode) {
       try {
@@ -189,7 +197,6 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
     }
   }, [playbackRate, ytReady, soloClockMode]);
 
-  // Sync play/pause commands to YouTube player when not in Solo Synth Clock mode
   useEffect(() => {
     if (!ytReady || !playerRef.current || soloClockMode) return;
     try {
@@ -204,7 +211,6 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
     }
   }, [isPlaying, ytReady, soloClockMode]);
 
-  // Handle explicit user seek requests
   useEffect(() => {
     if (!seekRequest) return;
     onTimeUpdate(seekRequest.time);
@@ -217,7 +223,6 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
     }
   }, [seekRequest]);
 
-  // High-resolution 60fps synchronization loop (YouTube time OR Solo Practice Clock)
   useEffect(() => {
     let rafId = 0;
     let lastPerf = performance.now();
@@ -245,7 +250,6 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
         }
       }
 
-      // Enforce A-B phrase practice loop if active
       if (loopRange && isPlaying && nextTime >= loopRange.end) {
         nextTime = loopRange.start;
         if (ytReady && playerRef.current && !soloClockMode) {
@@ -274,7 +278,7 @@ export const YouTubeSyncPlayer: React.FC<YouTubeSyncPlayerProps> = ({
         <div className="video-status-group">
           <span className={`sync-dot ${isPlaying ? 'live' : ''}`} />
           <span className="video-card-title">
-            {soloClockMode ? 'Solo Synth Clock' : ytReady ? 'YouTube Live Sync' : 'Connecting Player…'}
+            {soloClockMode ? 'Solo Synth Clock' : ytReady ? 'Privacy-Enhanced YouTube Sync' : 'Loading Video…'}
           </span>
         </div>
         <button
