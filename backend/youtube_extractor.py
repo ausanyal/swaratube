@@ -369,6 +369,11 @@ def download_matched_studio_preview(
                 }
                 overlap = sum(1 for t in core_tokens if t in cand_tokens)
                 score = overlap / max(1.0, float(len(core_tokens)))
+                lower_track = track_name.lower()
+                lower_source = title.lower()
+                for alt_tag in ("lofi", "lo-fi", "remix", "karaoke", "instrumental", "cover", "sped up", "slowed"):
+                    if alt_tag in lower_track and alt_tag not in lower_source:
+                        score -= 0.35
                 if overlap >= 1 and score > best_score:
                     best_score = score
                     best_candidate = {
