@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { GuitarMeta, SongChord, SongNote } from '../types';
 import {
   STRING_LABELS,
@@ -11,6 +11,12 @@ import {
 } from '../utils/guitarChords';
 import { synthEngine } from '../utils/synthAudio';
 
+interface PreviewChordBar {
+  rootPc: number;
+  quality: string;
+  symbol: string;
+}
+
 interface GuitarVisualizerProps {
   activeChord: SongChord | null;
   nextChord: SongChord | null;
@@ -18,6 +24,7 @@ interface GuitarVisualizerProps {
   activeNote: SongNote | null;
   currentTime: number;
   tempo: number;
+  playbackRate?: number;
   isPlaying: boolean;
   tonicPc: number;
   guitarMeta?: GuitarMeta;
@@ -34,6 +41,7 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
   activeNote,
   currentTime,
   tempo,
+  playbackRate = 1.0,
   isPlaying,
   tonicPc,
   guitarMeta,
@@ -44,6 +52,12 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
 }) => {
   const [easyFEnabled, setEasyFEnabled] = useState<boolean>(true);
   const [manualSweepDir, setManualSweepDir] = useState<'D' | 'U' | null>(null);
+
+  // Standalone Song Strum Pattern Preview Player state
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState<boolean>(false);
+  const [beatClickEnabled, setBeatClickEnabled] = useState<boolean>(true);
+  const [previewStepIdx, setPreviewStepIdx] = useState<number>(0);
+  const [previewBarIdx, setPreviewBarIdx] = useState<number>(0);
 
   const recommendedCapo = useMemo(
     () => guitarMeta?.recommendedCapo ?? computeBestCapoFret(allChords, tonicPc),
@@ -57,38 +71,185 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
     [selectedPatternId]
   );
 
-  // Compute current chord shape (defaulting to tonic Major if before first chord)
-  const effectiveRootPc = activeChord ? activeChord.rootPc : tonicPc;
-  const effectiveQuality = activeChord ? activeChord.quality : 'maj';
-  const concertSymbol = activeChord
-    ? activeChord.symbol
-    : formatConcertChordName(tonicPc, 'maj');
+  // Build representative 4-to-8 bar chord loop from the song's detected chords (or I-vi-IV-V in key if none yet)
+  const songChordLoop = useMemo<PreviewChordBar[]>(() => {
+    const bars: PreviewChordBar[] = [];
+    for (const ch of allChords) {
+      if (bars.length === 0 || bars[bars.length - 1].symbol !== ch.symbol) {
+        bars.push({
+          rootPc: ch.rootPc,
+          quality: ch.quality,
+          symbol: ch.symbol,
+        });
+      }
+      if (bars.length >= 8) break;
+    }
+
+    if (bars.length >= 2) return bars;
+
+    // Musical I - vi - IV - V fallback in the song's key so preview always sounds like a full song progression
+    const fallbackIntervals: Array<{ offset: number; quality: string }> = [
+      { offset: 0, quality: 'maj' },
+      { offset: 9, quality: 'min' },
+      { offset: 5, quality: 'maj' },
+      { offset: 7, quality: 'maj' },
+    ];
+    return fallbackIntervals.map(({ offset, quality }) => {
+      const pc = (((tonicPc + offset) % 12) + 12) % 12;
+      return {
+        rootPc: pc,
+        quality,
+        symbol: formatConcertChordName(pc, quality),
+      };
+    });
+  }, [allChords, tonicPc]);
+
+  // Stop standalone strum preview automatically if main YouTube playback starts
+  useEffect(() => {
+    if (isPlaying && isPreviewPlaying) {
+      setIsPreviewPlaying(false);
+    }
+  }, [isPlaying, isPreviewPlaying]);
+
+  // Reset preview bar index when song chord loop changes
+  useEffect(() => {
+    setPreviewBarIdx(0);
+    setPreviewStepIdx(0);
+    setIsPreviewPlaying(false);
+  }, [tonicPc, allChords.length]);
+
+  const safeTempo = Math.max(45, tempo || 88);
+  const effectiveBpm = Math.max(30, safeTempo * Math.max(0.5, playbackRate));
+  const quarterSec = 60 / safeTempo;
+  const cycleSec = pattern.beatsPerCycle * quarterSec;
+  const stepSec = cycleSec / pattern.steps.length;
+
+  // Keep latest values in refs so the precision preview timer never drifts or stutters when controls toggle
+  const previewStateRef = useRef({
+    stepIdx: 0,
+    barIdx: 0,
+    pattern,
+    songChordLoop,
+    effectiveCapo,
+    easyFEnabled,
+    beatClickEnabled,
+  });
+  previewStateRef.current.pattern = pattern;
+  previewStateRef.current.songChordLoop = songChordLoop;
+  previewStateRef.current.effectiveCapo = effectiveCapo;
+  previewStateRef.current.easyFEnabled = easyFEnabled;
+  previewStateRef.current.beatClickEnabled = beatClickEnabled;
+
+  // Run standalone Song Strum Preview loop when isPreviewPlaying is active
+  useEffect(() => {
+    if (!isPreviewPlaying) return;
+
+    const playCurrentPreviewStep = (sIdx: number, bIdx: number) => {
+      const st = previewStateRef.current;
+      const curPattern = st.pattern;
+      const loop = st.songChordLoop;
+      const safeStep = sIdx % curPattern.steps.length;
+      const safeBar = bIdx % Math.max(1, loop.length);
+      const step = curPattern.steps[safeStep];
+      const barChord = loop[safeBar] ?? {
+        rootPc: tonicPc,
+        quality: 'maj',
+        symbol: formatConcertChordName(tonicPc, 'maj'),
+      };
+
+      setPreviewStepIdx(safeStep);
+      setPreviewBarIdx(safeBar);
+
+      // Optional subtle woodblock beat tick on main numbered beats (not '&' offbeats)
+      const isMainBeat = step.countLabel !== '&';
+      if (st.beatClickEnabled && (curPattern.timeSignature === '4/4' ? isMainBeat : safeStep % 3 === 0)) {
+        synthEngine.playBeatTick(safeStep === 0, 0.13);
+      }
+
+      if (step.action !== 'rest') {
+        const shape = getGuitarShapeForChord(
+          barChord.rootPc,
+          barChord.quality,
+          st.effectiveCapo,
+          st.easyFEnabled
+        );
+        const midis = getChordStringMidis(shape, st.effectiveCapo);
+        synthEngine.playGuitarStrum(midis, step.action, Boolean(step.accent), 0.36);
+      }
+    };
+
+    // Trigger step 0 immediately on Play click so feedback is instantaneous
+    previewStateRef.current.stepIdx = 0;
+    playCurrentPreviewStep(0, previewStateRef.current.barIdx);
+
+    const intervalMs = Math.max(90, ((cycleSec / pattern.steps.length) / Math.max(0.5, playbackRate)) * 1000);
+
+    const timerId = window.setInterval(() => {
+      const st = previewStateRef.current;
+      const nextStep = (st.stepIdx + 1) % st.pattern.steps.length;
+      const nextBar =
+        nextStep === 0
+          ? (st.barIdx + 1) % Math.max(1, st.songChordLoop.length)
+          : st.barIdx;
+      st.stepIdx = nextStep;
+      st.barIdx = nextBar;
+      playCurrentPreviewStep(nextStep, nextBar);
+    }, intervalMs);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [isPreviewPlaying, pattern.id, pattern.steps.length, cycleSec, playbackRate, tonicPc]);
+
+  // Determine displayed chord (Preview Bar chord when previewing, otherwise live YouTube activeChord)
+  const activePreviewBar = songChordLoop[previewBarIdx % Math.max(1, songChordLoop.length)];
+  const nextPreviewBar = songChordLoop[(previewBarIdx + 1) % Math.max(1, songChordLoop.length)];
+
+  const effectiveRootPc = isPreviewPlaying
+    ? activePreviewBar.rootPc
+    : activeChord
+      ? activeChord.rootPc
+      : tonicPc;
+  const effectiveQuality = isPreviewPlaying
+    ? activePreviewBar.quality
+    : activeChord
+      ? activeChord.quality
+      : 'maj';
+  const concertSymbol = isPreviewPlaying
+    ? activePreviewBar.symbol
+    : activeChord
+      ? activeChord.symbol
+      : formatConcertChordName(tonicPc, 'maj');
 
   const chordShape = useMemo(
     () => getGuitarShapeForChord(effectiveRootPc, effectiveQuality, effectiveCapo, easyFEnabled),
     [effectiveRootPc, effectiveQuality, effectiveCapo, easyFEnabled]
   );
 
+  const displayedNextChord = isPreviewPlaying ? nextPreviewBar : nextChord;
   const nextShape = useMemo(() => {
-    if (!nextChord) return null;
-    return getGuitarShapeForChord(nextChord.rootPc, nextChord.quality, effectiveCapo, easyFEnabled);
-  }, [nextChord, effectiveCapo, easyFEnabled]);
+    if (!displayedNextChord) return null;
+    return getGuitarShapeForChord(
+      displayedNextChord.rootPc,
+      displayedNextChord.quality,
+      effectiveCapo,
+      easyFEnabled
+    );
+  }, [displayedNextChord, effectiveCapo, easyFEnabled]);
 
   const stringMidis = useMemo(
     () => getChordStringMidis(chordShape, effectiveCapo),
     [chordShape, effectiveCapo]
   );
 
-  // Compute live strum step index from currentTime + tempo + beatOffset
+  // Compute live strum step index (either from standalone Preview Player or main YouTube currentTime)
   const beatOffset = guitarMeta?.beatOffset ?? 0;
-  const safeTempo = Math.max(45, tempo || 88);
-  const quarterSec = 60 / safeTempo;
-  const cycleSec = pattern.beatsPerCycle * quarterSec;
-  const stepSec = cycleSec / pattern.steps.length;
-
   const relTime = Math.max(0, currentTime - beatOffset);
-  const activeStepIdx = Math.floor((relTime % cycleSec) / stepSec) % pattern.steps.length;
-  const activeStep = pattern.steps[activeStepIdx];
+  const videoStepIdx = Math.floor((relTime % cycleSec) / stepSec) % pattern.steps.length;
+
+  const activeStepIdx = isPreviewPlaying ? previewStepIdx : videoStepIdx;
+  const activeStep = pattern.steps[activeStepIdx] ?? pattern.steps[0];
+  const anyStrumActive = isPlaying || isPreviewPlaying;
 
   const melodyTab = useMemo(() => {
     if (!activeNote) return null;
@@ -103,9 +264,24 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
     }, 260);
   };
 
+  const toggleStrumPreview = () => {
+    setIsPreviewPlaying((prev) => {
+      const next = !prev;
+      if (next) {
+        // Start from currently active chord if present in songChordLoop
+        const matchIdx = activeChord
+          ? songChordLoop.findIndex((b) => b.symbol === activeChord.symbol)
+          : 0;
+        previewStateRef.current.barIdx = matchIdx >= 0 ? matchIdx : 0;
+        previewStateRef.current.stepIdx = 0;
+      }
+      return next;
+    });
+  };
+
   const liveSweepDir: 'D' | 'U' | null =
     manualSweepDir ??
-    (isPlaying && activeStep.action !== 'rest' ? activeStep.action : null);
+    (anyStrumActive && activeStep.action !== 'rest' ? activeStep.action : null);
 
   return (
     <section className="instrument-panel guitar-panel" aria-label="Guitar Strum and Chord Trainer">
@@ -120,22 +296,33 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
         </div>
 
         <div className="guitar-controls-row">
-          {/* Strumming Pattern Picker */}
-          <label className="inline-field">
-            <span>Strum Groove:</span>
-            <select
-              className="studio-select"
-              value={pattern.id}
-              onChange={(e) => onPatternChange(e.target.value)}
-              aria-label="Select guitar strumming pattern"
+          {/* Strumming Pattern Picker + Instant Play Button right beside it */}
+          <div className="strum-picker-with-play">
+            <label className="inline-field">
+              <span>Strum Groove:</span>
+              <select
+                className="studio-select"
+                value={pattern.id}
+                onChange={(e) => onPatternChange(e.target.value)}
+                aria-label="Select guitar strumming pattern"
+              >
+                {STRUM_PATTERNS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              className={`strum-play-btn ${isPreviewPlaying ? 'playing' : ''}`}
+              onClick={toggleStrumPreview}
+              title="Hear how this strumming pattern sounds across this song's chord progression"
             >
-              {STRUM_PATTERNS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              {isPreviewPlaying ? '⏹ Stop Strum' : '▶ Play Strum'}
+            </button>
+          </div>
 
           {/* Capo Selector */}
           <label className="inline-field">
@@ -189,7 +376,7 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
                 type="button"
                 className="chip-btn active"
                 onClick={() => triggerManualStrum('D')}
-                title="Audition Downstrum on this chord"
+                title="Audition single Downstrum on this chord"
               >
                 ↓ Strum Down
               </button>
@@ -197,7 +384,7 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
                 type="button"
                 className="chip-btn"
                 onClick={() => triggerManualStrum('U')}
-                title="Audition Upstrum on this chord"
+                title="Audition single Upstrum on this chord"
               >
                 ↑ Strum Up
               </button>
@@ -211,7 +398,6 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
             role="img"
             aria-label={`Guitar chord diagram for ${chordShape.shapeName}`}
           >
-            {/* Top Nut (thick if baseFret === 1) */}
             <line
               x1="40"
               y1="38"
@@ -226,7 +412,6 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
               </text>
             )}
 
-            {/* 4 Horizontal Frets */}
             {[1, 2, 3, 4].map((fIdx) => (
               <line
                 key={fIdx}
@@ -239,7 +424,6 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
               />
             ))}
 
-            {/* 6 Vertical Guitar Strings (E A D G B e) */}
             {STRING_LABELS.map((sLabel, sIdx) => {
               const x = 40 + sIdx * 30;
               const fretVal = chordShape.frets[sIdx];
@@ -255,7 +439,6 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
                     strokeWidth={strokeW}
                     opacity={fretVal < 0 ? 0.45 : 0.95}
                   />
-                  {/* Muted 'X' or Open 'O' indicator above nut */}
                   {fretVal < 0 && (
                     <text x={x} y="25" textAnchor="middle" className="string-mute-mark">
                       ✕
@@ -271,7 +454,6 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
                       strokeWidth="2"
                     />
                   )}
-                  {/* String tuning label at bottom */}
                   <text x={x} y="212" textAnchor="middle" className="string-tuning-label">
                     {sLabel}
                   </text>
@@ -279,7 +461,6 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
               );
             })}
 
-            {/* Barre indicator bar if chord uses index finger barre */}
             {chordShape.barre && (
               <rect
                 x={40 + (6 - chordShape.barre.fromString) * 30 - 9}
@@ -292,7 +473,6 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
               />
             )}
 
-            {/* Fretted Finger Dots */}
             {chordShape.frets.map((fretVal, sIdx) => {
               if (fretVal <= 0) return null;
               const relRow = fretVal - chordShape.baseFret;
@@ -313,14 +493,13 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
             })}
           </svg>
 
-          {/* Up Next Chord & Lead Melody Tab Hint */}
           <div className="guitar-side-footer">
             <div className="next-chord-chip">
               <span className="note-hero-label">Next Chord</span>
               <strong>
-                {nextChord && nextShape
+                {displayedNextChord && nextShape
                   ? effectiveCapo > 0
-                    ? `${nextShape.shapeName} (${nextChord.symbol})`
+                    ? `${nextShape.shapeName} (${displayedNextChord.symbol})`
                     : nextShape.shapeName
                   : '—'}
               </strong>
@@ -336,16 +515,85 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
           </div>
         </div>
 
-        {/* Right: Live Synced Strumming Pattern & 6-String Strum Soundhole */}
+        {/* Right: Live Synced Strumming Pattern, Song Progression Preview Player & Soundhole */}
         <div className="guitar-strum-stage">
           <div className="strum-stage-header">
             <div>
-              <span className="note-hero-label">Live Strumming Pattern ({pattern.timeSignature})</span>
+              <span className="note-hero-label">
+                {isPreviewPlaying
+                  ? `Playing Song Strum Preview (${pattern.timeSignature})`
+                  : `Live Strumming Pattern (${pattern.timeSignature})`}
+              </span>
               <p className="strum-subtitle">
-                {pattern.subtitle} — keep your right wrist moving steadily down &amp; up!
+                {pattern.subtitle} — click <strong>Play Strum</strong> to hear how this pattern sounds across the song&apos;s chords!
               </p>
             </div>
-            <span className="tempo-badge">{Math.round(safeTempo)} BPM</span>
+
+            <div className="strum-header-actions">
+              <button
+                type="button"
+                className={`strum-play-btn ${isPreviewPlaying ? 'playing' : ''}`}
+                onClick={toggleStrumPreview}
+              >
+                {isPreviewPlaying ? '⏹ Stop Strum Preview' : '▶ Play Strum Pattern'}
+              </button>
+
+              <button
+                type="button"
+                className={`chip-btn ${beatClickEnabled ? 'active' : ''}`}
+                onClick={() => setBeatClickEnabled((v) => !v)}
+                title="Toggle soft metronome beat click during Strum Preview"
+              >
+                {beatClickEnabled ? '🥁 Beat Tick ON' : '🥁 Beat Tick'}
+              </button>
+
+              <span className="tempo-badge">{Math.round(effectiveBpm)} BPM</span>
+            </div>
+          </div>
+
+          {/* Song Chord Progression Loop Bar (shows overall chord sequence for this song) */}
+          <div className="song-chord-loop-strip" aria-label="Song chord progression loop">
+            <span className="loop-strip-label">Song Chords:</span>
+            <div className="loop-chord-pills">
+              {songChordLoop.map((bar, idx) => {
+                const shaped = getGuitarShapeForChord(
+                  bar.rootPc,
+                  bar.quality,
+                  effectiveCapo,
+                  easyFEnabled
+                );
+                const isBarActive = isPreviewPlaying
+                  ? idx === previewBarIdx % songChordLoop.length
+                  : activeChord?.symbol === bar.symbol;
+
+                return (
+                  <React.Fragment key={`${bar.symbol}-${idx}`}>
+                    <button
+                      type="button"
+                      className={`prog-chord-pill ${isBarActive ? 'active' : ''}`}
+                      onClick={() => {
+                        previewStateRef.current.barIdx = idx;
+                        previewStateRef.current.stepIdx = 0;
+                        setPreviewBarIdx(idx);
+                        setPreviewStepIdx(0);
+                        if (!isPreviewPlaying) {
+                          setIsPreviewPlaying(true);
+                        }
+                      }}
+                      title={`Jump strum preview to ${shaped.shapeName}`}
+                    >
+                      <strong>{shaped.shapeName.replace(' (Easy F)', '')}</strong>
+                      {effectiveCapo > 0 && <small>{bar.symbol}</small>}
+                    </button>
+                    {idx < songChordLoop.length - 1 && (
+                      <span className="prog-arrow" aria-hidden="true">
+                        →
+                      </span>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
           </div>
 
           {/* Strum Sequencer Beat Cards */}
@@ -354,7 +602,7 @@ export const GuitarVisualizer: React.FC<GuitarVisualizerProps> = ({
             style={{ gridTemplateColumns: `repeat(${pattern.steps.length}, minmax(0, 1fr))` }}
           >
             {pattern.steps.map((step, idx) => {
-              const isCurrent = isPlaying && idx === activeStepIdx;
+              const isCurrent = anyStrumActive && idx === activeStepIdx;
               return (
                 <div
                   key={`${step.countLabel}-${idx}`}

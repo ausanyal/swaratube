@@ -895,6 +895,7 @@ export const App: React.FC = () => {
                 activeNote={activeNote}
                 currentTime={effectiveTime}
                 tempo={song.tempo}
+                playbackRate={playbackRate}
                 isPlaying={isPlaying}
                 tonicPc={transformed.effectiveTonicPc}
                 guitarMeta={song.guitar}

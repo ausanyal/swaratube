@@ -203,6 +203,27 @@ class StudioSynthEngine {
       });
     }
   }
+
+  public playBeatTick(isDownbeat = false, volume = 0.14): void {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain) return;
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const env = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(isDownbeat ? 920 : 640, now);
+    osc.frequency.exponentialRampToValueAtTime(isDownbeat ? 420 : 310, now + 0.028);
+
+    env.gain.setValueAtTime(0.0001, now);
+    env.gain.linearRampToValueAtTime(isDownbeat ? volume * 1.25 : volume * 0.8, now + 0.003);
+    env.gain.exponentialRampToValueAtTime(0.0001, now + 0.032);
+
+    osc.connect(env);
+    env.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.04);
+  }
 }
 
 export const synthEngine = new StudioSynthEngine();
